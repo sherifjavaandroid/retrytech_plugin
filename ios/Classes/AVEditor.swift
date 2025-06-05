@@ -127,67 +127,71 @@ class AVEditor {
     }
 
     func mergeAudioVideo(videoInput: URL, audioInput: URL, outputURL: URL, completion: @escaping (_ output: Bool) -> Void) {
-    let mixComposition = AVMutableComposition()
-    let videoAsset = AVAsset(url: videoInput)
-    let audioAsset = AVAsset(url: audioInput)
 
-    Task {
-        do {
-            // Load and insert video track
-            let videoTracks: [AVAssetTrack]
-            if #available(iOS 15.0, *) {
-                videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
-            } else {
-                videoTracks = videoAsset.tracks(withMediaType: .video)
-            }
+        let mixComposition = AVMutableComposition()
+        let videoAsset = AVAsset(url: videoInput)
+        let audioAsset = AVAsset(url: audioInput)
 
-            guard let videoTrack = videoTracks.first else {
-                completion(false)
-                return
-            }
+        Task {
+            do {
+                // Load and insert video track
+                let videoTracks: [AVAssetTrack]
+if #available(iOS 15.0, *) {
+    videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
+} else {
+    videoTracks = videoAsset.tracks(withMediaType: .video)
+}
 
-            let videoCompositionTrack = mixComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
-            try videoCompositionTrack?.insertTimeRange(CMTimeRange(start: .zero, duration: videoAsset.duration), of: videoTrack, at: .zero)
+                guard let videoTrack = videoTracks.first else {
+                    completion(false)
+                    return
+                }
 
-            videoCompositionTrack?.preferredTransform = videoTrack.preferredTransform
+                let videoCompositionTrack = mixComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+                try videoCompositionTrack?.insertTimeRange(CMTimeRange(start: .zero, duration: videoAsset.duration), of: videoTrack, at: .zero)
 
-            // Load and insert audio track
-            let newAudioTracks: [AVAssetTrack]
-            if #available(iOS 15.0, *) {
-                newAudioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
-            } else {
-                newAudioTracks = audioAsset.tracks(withMediaType: .audio)
-            }
+                videoCompositionTrack?.preferredTransform = videoTrack.preferredTransform
 
-            if let newAudioTrack = newAudioTracks.first {
-                let newAudioCompositionTrack = mixComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-                try newAudioCompositionTrack?.insertTimeRange(CMTimeRange(start: .zero, duration: videoAsset.duration), of: newAudioTrack, at: .zero)
-            }
+                // Load and insert audio track (always)
+                // Load and insert audio track from audioInput
+                let audioTracksFromInput: [AVAssetTrack]
+                if #available(iOS 15.0, *) {
+                    audioTracksFromInput = try await audioAsset.loadTracks(withMediaType: .audio)
+                } else {
+                    audioTracksFromInput = audioAsset.tracks(withMediaType: .audio)
+                }
 
-            // Export
-            try? FileManager.default.removeItem(at: outputURL)
-            let exporter = AVAssetExportSession(asset: mixComposition, presetName: AVAssetExportPresetHighestQuality)
-            exporter?.outputFileType = .mp4
-            exporter?.outputURL = outputURL
-            exporter?.shouldOptimizeForNetworkUse = true
+                if let audioTrackToMerge = audioTracksFromInput.first {
+                    let newAudioCompositionTrack = mixComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                    // Using videoAsset.duration as per original logic for the range to insert.
+                    try newAudioCompositionTrack?.insertTimeRange(CMTimeRange(start: .zero, duration: videoAsset.duration), of: audioTrackToMerge, at: .zero)
+                }
 
-            exporter?.exportAsynchronously {
-                DispatchQueue.main.async {
-                    if exporter?.status == .completed {
-                        completion(true)
-                    } else {
-                        print("❌ Export failed: \(exporter?.error?.localizedDescription ?? "Unknown error")")
-                        completion(false)
+                // Export
+                let exporter = AVAssetExportSession(asset: mixComposition, presetName: AVAssetExportPresetHighestQuality)
+                exporter?.outputFileType = .mp4
+                exporter?.outputURL = outputURL
+                exporter?.shouldOptimizeForNetworkUse = true
+
+                try? FileManager.default.removeItem(at: outputURL) // Clean up before exporting
+
+                exporter?.exportAsynchronously {
+                    DispatchQueue.main.async {
+                        if exporter?.status == .completed {
+                            completion(true)
+                        } else {
+                            print("❌ Export failed: \(exporter?.error?.localizedDescription ?? "Unknown error")")
+                            completion(false)
+                        }
                     }
                 }
-            }
 
-        } catch {
-            print("❌ Error merging: \(error.localizedDescription)")
-            completion(false)
+            } catch {
+                print("❌ Error merging: \(error.localizedDescription)")
+                completion(false)
+            }
         }
     }
-}
 
 
 
@@ -390,12 +394,23 @@ if #available(iOS 15.0, *) {
         duration: CMTime,
         audioMixParams: inout [AVMutableAudioMixInputParameters]
     ) async throws {
-        let tracks = try await asset.loadTracks(withMediaType: .audio)
-        guard let track = tracks.first else { return }
+        let tracks: [AVAssetTrack]
+        if #available(iOS 15.0, *) {
+            tracks = try await asset.loadTracks(withMediaType: .audio)
+        } else {
+            // Fallback for older iOS versions
+            tracks = asset.tracks(withMediaType: .audio)
+        }
+        
+        guard let track = tracks.first else {
+            print("No audio tracks found in asset for addAudioTrack.")
+            return // Or throw an error if this case should be fatal
+        }
 
         let compTrack = composition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
         try compTrack?.insertTimeRange(CMTimeRange(start: startTime, duration: duration), of: track, at: .zero)
 
+        // AVMutableAudioMixInputParameters init(track: AVAssetTrack?) takes an optional track.
         let params = AVMutableAudioMixInputParameters(track: compTrack)
         params.setVolume(1.0, at: .zero)
         audioMixParams.append(params)
@@ -556,20 +571,30 @@ extension AVEditor {
 extension View {
     func snapshotComplition(color: Color = .white,complition: @escaping (UIImage)->()){
         DispatchQueue.main.async {
-            let controller = UIHostingController(rootView: self)
-            let view = controller.view
+            if #available(iOS 14.0, *) {
+                let controller = UIHostingController(rootView: self)
+                let view = controller.view
 
-            let targetSize = controller.view.intrinsicContentSize
-            view?.bounds = CGRect(origin: .zero, size: targetSize)
-            view?.backgroundColor = UIColor(color)
+                let targetSize = controller.view.intrinsicContentSize
+                view?.bounds = CGRect(origin: .zero, size: targetSize)
+                view?.backgroundColor = UIColor(color)
 
-            let renderer = UIGraphicsImageRenderer(size: targetSize)
-            DispatchQueue.main.async {
-                let image = renderer.image { _ in
-                    view?.drawHierarchy(in: controller.view.bounds, afterScreenUpdates: true)
+                let renderer = UIGraphicsImageRenderer(size: targetSize)
+                DispatchQueue.main.async {
+                    let image = renderer.image { _ in
+                        view?.drawHierarchy(in: controller.view.bounds, afterScreenUpdates: true)
+                    }
+                    complition(image)
                 }
-                complition(image)
+            } else {
+                // Fallback on earlier versions
+                // Or handle the unavailability appropriately, e.g., by returning a default/empty image
+                print("UIHostingController is not available on this iOS version for snapshotComplition.")
+                complition(UIImage()) // Return an empty image or handle as an error
             }
+        }
+
+
         }
     }
 }
