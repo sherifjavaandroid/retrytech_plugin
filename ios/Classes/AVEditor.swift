@@ -127,69 +127,67 @@ class AVEditor {
     }
 
     func mergeAudioVideo(videoInput: URL, audioInput: URL, outputURL: URL, completion: @escaping (_ output: Bool) -> Void) {
+    let mixComposition = AVMutableComposition()
+    let videoAsset = AVAsset(url: videoInput)
+    let audioAsset = AVAsset(url: audioInput)
 
-        let mixComposition = AVMutableComposition()
-        let videoAsset = AVAsset(url: videoInput)
-        let audioAsset = AVAsset(url: audioInput)
+    Task {
+        do {
+            // Load and insert video track
+            let videoTracks: [AVAssetTrack]
+            if #available(iOS 15.0, *) {
+                videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
+            } else {
+                videoTracks = videoAsset.tracks(withMediaType: .video)
+            }
 
-        Task {
-            do {
-                // Load and insert video track
-                let videoTracks: [AVAssetTrack]
-if #available(iOS 15.0, *) {
-    videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
-} else {
-    videoTracks = videoAsset.tracks(withMediaType: .video)
-}
+            guard let videoTrack = videoTracks.first else {
+                completion(false)
+                return
+            }
 
-                guard let videoTrack = videoTracks.first else {
-                    completion(false)
-                    return
-                }
+            let videoCompositionTrack = mixComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
+            try videoCompositionTrack?.insertTimeRange(CMTimeRange(start: .zero, duration: videoAsset.duration), of: videoTrack, at: .zero)
 
-                let videoCompositionTrack = mixComposition.addMutableTrack(withMediaType: .video, preferredTrackID: kCMPersistentTrackID_Invalid)
-                try videoCompositionTrack?.insertTimeRange(CMTimeRange(start: .zero, duration: videoAsset.duration), of: videoTrack, at: .zero)
+            videoCompositionTrack?.preferredTransform = videoTrack.preferredTransform
 
-                videoCompositionTrack?.preferredTransform = videoTrack.preferredTransform
+            // Load and insert audio track
+            let newAudioTracks: [AVAssetTrack]
+            if #available(iOS 15.0, *) {
+                newAudioTracks = try await audioAsset.loadTracks(withMediaType: .audio)
+            } else {
+                newAudioTracks = audioAsset.tracks(withMediaType: .audio)
+            }
 
-                // Load and insert audio track (always)
-             let videoTracks: [AVAssetTrack]
-if #available(iOS 15.0, *) {
-    videoTracks = try await videoAsset.loadTracks(withMediaType: .video)
-} else {
-    videoTracks = videoAsset.tracks(withMediaType: .video)
-}
+            if let newAudioTrack = newAudioTracks.first {
+                let newAudioCompositionTrack = mixComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
+                try newAudioCompositionTrack?.insertTimeRange(CMTimeRange(start: .zero, duration: videoAsset.duration), of: newAudioTrack, at: .zero)
+            }
 
-                if let newAudioTrack = newAudioTracks.first {
-                    let newAudioCompositionTrack = mixComposition.addMutableTrack(withMediaType: .audio, preferredTrackID: kCMPersistentTrackID_Invalid)
-                    try newAudioCompositionTrack?.insertTimeRange(CMTimeRange(start: .zero, duration: videoAsset.duration), of: newAudioTrack, at: .zero)
-                }
+            // Export
+            try? FileManager.default.removeItem(at: outputURL)
+            let exporter = AVAssetExportSession(asset: mixComposition, presetName: AVAssetExportPresetHighestQuality)
+            exporter?.outputFileType = .mp4
+            exporter?.outputURL = outputURL
+            exporter?.shouldOptimizeForNetworkUse = true
 
-                // Export
-                let exporter = AVAssetExportSession(asset: mixComposition, presetName: AVAssetExportPresetHighestQuality)
-                exporter?.outputFileType = .mp4
-                exporter?.outputURL = outputURL
-                exporter?.shouldOptimizeForNetworkUse = true
-
-                try? FileManager.default.removeItem(at: outputURL) // Clean up before exporting
-
-                exporter?.exportAsynchronously {
-                    DispatchQueue.main.async {
-                        if exporter?.status == .completed {
-                            completion(true)
-                        } else {
-                            print("❌ Export failed: \(exporter?.error?.localizedDescription ?? "Unknown error")")
-                            completion(false)
-                        }
+            exporter?.exportAsynchronously {
+                DispatchQueue.main.async {
+                    if exporter?.status == .completed {
+                        completion(true)
+                    } else {
+                        print("❌ Export failed: \(exporter?.error?.localizedDescription ?? "Unknown error")")
+                        completion(false)
                     }
                 }
-
-            } catch {
-                print("❌ Error merging: \(error.localizedDescription)")
-                completion(false)
             }
+
+        } catch {
+            print("❌ Error merging: \(error.localizedDescription)")
+            completion(false)
         }
     }
+}
 
 
 
